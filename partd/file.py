@@ -1,5 +1,6 @@
 import atexit
 from contextlib import suppress
+import json
 import os
 import shutil
 import string
@@ -7,6 +8,10 @@ import tempfile
 
 from .core import Interface
 import locket
+
+
+TXN_JOURNAL_NAME = '.txn-journal'
+TXN_COMMIT_MARKER = 'COMMITTED'
 
 
 class File(Interface):
@@ -22,6 +27,7 @@ class File(Interface):
             with suppress(OSError):
                 os.makedirs(path)
         self.lock = locket.lock_file(self.filename('.lock'))
+        self._recover_transaction()
         Interface.__init__(self)
 
     def __getstate__(self):
@@ -44,6 +50,122 @@ class File(Interface):
                         os.fsync(f)
         finally:
             if lock: self.lock.release()
+
+    def append_transactional(self, data, fsync=True, lock=True):
+        """ Atomically append a batch of ``{key: bytes}`` to many partitions
+
+        Opt-in variant of ``append`` for shuffle-style batches that touch
+        several partition files at once.  Either the whole batch becomes
+        visible or, if the process dies midway, none of it does; the next
+        ``File`` opened on the same directory rolls back the partial batch.
+
+        Persistence order (each step durable before the next starts):
+
+        1. A journal file recording every target file's original length is
+           written, flushed and fsynced.
+        2. Each partition's payload is appended, flushed and (if ``fsync``)
+           fsynced.
+        3. A commit marker is appended to the journal, flushed and fsynced.
+        4. The journal is removed.
+
+        On open, a journal without a commit marker truncates each target
+        back to its recorded length (files first created by the batch are
+        removed); a committed journal is simply discarded.
+        """
+        if lock:
+            self.lock.acquire()
+        try:
+            entries = []
+            for k in data:
+                fn = self.filename(k)
+                existed = os.path.exists(fn)
+                entries.append((os.path.relpath(fn, self.path), existed,
+                                os.path.getsize(fn) if existed else 0))
+            self._write_txn_journal(entries)
+            for (relpath, _, _), v in zip(entries, data.values()):
+                self._append_txn_file(os.path.join(self.path, relpath), v,
+                                      fsync)
+            self._commit_txn_journal()
+            self._remove_txn_journal()
+        finally:
+            if lock:
+                self.lock.release()
+
+    def _txn_journal_path(self):
+        return os.path.join(self.path, TXN_JOURNAL_NAME)
+
+    def _write_txn_journal(self, entries):
+        with open(self._txn_journal_path(), 'w') as f:
+            f.write(json.dumps({'entries': [list(e) for e in entries]}))
+            f.write('\n')
+            f.flush()
+            os.fsync(f.fileno())
+        self._fsync_dir()
+
+    def _append_txn_file(self, fn, value, fsync):
+        if not os.path.exists(os.path.dirname(fn)):
+            os.makedirs(os.path.dirname(fn))
+        with open(fn, 'ab') as f:
+            f.write(value)
+            f.flush()
+            if fsync:
+                os.fsync(f.fileno())
+
+    def _commit_txn_journal(self):
+        with open(self._txn_journal_path(), 'a') as f:
+            f.write(TXN_COMMIT_MARKER + '\n')
+            f.flush()
+            os.fsync(f.fileno())
+
+    def _remove_txn_journal(self):
+        os.remove(self._txn_journal_path())
+        self._fsync_dir()
+
+    def _fsync_dir(self):
+        with suppress(OSError):
+            fd = os.open(self.path, os.O_RDONLY)
+            try:
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+
+    def _recover_transaction(self):
+        journal = self._txn_journal_path()
+        if not os.path.exists(journal):
+            return
+        self.lock.acquire()
+        try:
+            if not os.path.exists(journal):
+                return
+            with open(journal, 'r') as f:
+                lines = f.read().splitlines()
+            committed = bool(lines) and lines[-1] == TXN_COMMIT_MARKER
+            if not committed:
+                # A journal that cannot be parsed was never fully fsynced,
+                # so no partition data was appended yet; discard it.
+                entries = []
+                if lines:
+                    with suppress(ValueError, KeyError):
+                        entries = json.loads(lines[0])['entries']
+                for entry in entries:
+                    self._rollback_txn_entry(entry)
+            os.remove(journal)
+            self._fsync_dir()
+        finally:
+            self.lock.release()
+
+    def _rollback_txn_entry(self, entry):
+        relpath, existed, length = entry
+        fn = os.path.join(self.path, relpath)
+        if existed:
+            with suppress(OSError):
+                with open(fn, 'r+b') as f:
+                    f.truncate(length)
+                    f.flush()
+                    os.fsync(f.fileno())
+        else:
+            with suppress(OSError):
+                os.remove(fn)
 
     def _get(self, keys, lock=True, **kwargs):
         assert isinstance(keys, (list, tuple, set))
