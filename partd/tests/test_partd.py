@@ -29,7 +29,7 @@ def test_partd():
 def test_key_tuple():
     with File('foo') as p:
         p.append({('a', 'b'): b'123'})
-        assert os.path.exists(os.path.join(p.path, 'a', 'b'))
+        assert os.path.exists(os.path.join(p.path, 'S1_a', 'S1_b'))
 
 
 def test_ensure():
