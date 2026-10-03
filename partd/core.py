@@ -76,6 +76,19 @@ class Interface:
         else:
             return self._get(keys, **kwargs)
 
+    def iter_chunks(self, key, chunksize=1024 * 1024, lock=True):
+        """Yield the bytes for ``key`` without joining them in memory.
+
+        The bytes available when iteration starts form a snapshot. Appends
+        made after that point are not included. Chunks contain at most
+        ``chunksize`` bytes.
+        """
+        if not isinstance(chunksize, int):
+            raise TypeError("chunksize must be a positive integer")
+        if chunksize <= 0:
+            raise ValueError("chunksize must be greater than zero")
+        return self._iter_chunks(key, chunksize, lock=lock)
+
     def delete(self, keys, **kwargs):
         if not isinstance(keys, list):
             return self._delete([keys], **kwargs)
@@ -87,4 +100,3 @@ class Interface:
             result = self.partd.get(keys, lock=False)
             self.partd.delete(keys, lock=False)
         return result
-

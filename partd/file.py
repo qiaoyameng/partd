@@ -62,6 +62,12 @@ class File(Interface):
                 self.lock.release()
         return result
 
+    def _open(self, filename):
+        return open(filename, 'rb')
+
+    def _iter_chunks(self, key, chunksize=1024 * 1024, lock=True):
+        return _FileChunks(self, key, chunksize, lock)
+
     def _iset(self, key, value, lock=True):
         """ Idempotent set """
         fn = self.filename(key)
@@ -105,6 +111,78 @@ class File(Interface):
         if not self._explicitly_given_path:
             self.drop()
             os.rmdir(self.path)
+
+
+class _FileChunks:
+    __slots__ = ('_file', '_remaining', '_chunksize', '_closed')
+
+    def __init__(self, partd, key, chunksize, lock):
+        filename = partd.filename(key)
+        self._file = None
+        self._remaining = 0
+        self._chunksize = chunksize
+        self._closed = False
+
+        if lock:
+            partd.lock.acquire()
+        try:
+            try:
+                self._remaining = os.path.getsize(filename)
+                self._file = partd._open(filename)
+            except BaseException as exception:
+                self._close(raise_on_error=False)
+                if not isinstance(exception, OSError):
+                    raise
+        finally:
+            if lock:
+                partd.lock.release()
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        if self._closed:
+            raise StopIteration
+
+        size = min(self._chunksize, self._remaining)
+        try:
+            chunk = self._file.read(size)
+        except BaseException:
+            self._close(raise_on_error=False)
+            raise
+
+        if not chunk:
+            self.close()
+            raise StopIteration
+
+        self._remaining -= len(chunk)
+        if self._remaining == 0:
+            self.close()
+        return chunk
+
+    def close(self):
+        self._close(raise_on_error=True)
+
+    def _close(self, raise_on_error):
+        if self._file is not None:
+            file = self._file
+            self._file = None
+            try:
+                file.close()
+            except BaseException:
+                if raise_on_error:
+                    raise
+        self._remaining = 0
+        self._closed = True
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self.close()
+
+    def __del__(self):
+        self._close(raise_on_error=False)
 
 
 def filename(path, key):

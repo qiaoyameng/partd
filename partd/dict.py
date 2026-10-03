@@ -37,6 +37,9 @@ class Dict(Interface):
                 self.lock.release()
         return result
 
+    def _iter_chunks(self, key, chunksize=1024 * 1024, lock=True):
+        return _DictChunks(self, key, chunksize, lock)
+
     def _iset(self, key, value, lock=True):
         """ Idempotent set """
         if lock:
@@ -64,3 +67,59 @@ class Dict(Interface):
 
     def __exit__(self, *args):
         self.drop()
+
+
+class _DictChunks:
+    __slots__ = ('_chunks', '_current', '_offset', '_chunksize', '_closed')
+
+    def __init__(self, partd, key, chunksize, lock):
+        self._current = b''
+        self._offset = 0
+        self._chunksize = chunksize
+        self._closed = False
+
+        if lock:
+            partd.lock.acquire()
+        try:
+            self._chunks = iter(tuple(partd.data.get(key, ())))
+        finally:
+            if lock:
+                partd.lock.release()
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        if self._closed:
+            raise StopIteration
+
+        while self._offset >= len(self._current):
+            try:
+                self._current = next(self._chunks)
+            except StopIteration:
+                self.close()
+                raise
+            self._offset = 0
+
+        end = self._offset + self._chunksize
+        chunk = self._current[self._offset:end]
+        self._offset = end
+        return chunk
+
+    def close(self):
+        self._chunks = iter(())
+        self._current = b''
+        self._offset = 0
+        self._closed = True
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self.close()
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass

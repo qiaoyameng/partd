@@ -56,6 +56,9 @@ class Buffer(Interface):
             if lock: self.lock.release()
         return result
 
+    def _iter_chunks(self, key, chunksize=1024 * 1024, lock=True):
+        return _BufferChunks(self, key, chunksize, lock)
+
     def _iset(self, key, value, lock=True):
         """ Idempotent set """
         if lock: self.lock.acquire()
@@ -102,6 +105,73 @@ class Buffer(Interface):
         for key in keys:
             self.memory_usage -= self.lengths[key]
             del self.lengths[key]
+
+
+class _BufferChunks:
+    __slots__ = ('_readers', '_index', '_closed')
+
+    def __init__(self, partd, key, chunksize, lock):
+        readers = []
+        self._readers = readers
+        self._index = 0
+        self._closed = False
+
+        if lock:
+            partd.lock.acquire()
+        try:
+            for backend in (partd.fast, partd.slow):
+                try:
+                    readers.append(
+                        backend._iter_chunks(key, chunksize, lock=False)
+                    )
+                except BaseException:
+                    self._close(raise_on_error=False)
+                    raise
+        finally:
+            if lock:
+                partd.lock.release()
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        while self._index < len(self._readers):
+            reader = self._readers[self._index]
+            try:
+                return next(reader)
+            except StopIteration:
+                self._index += 1
+            except BaseException:
+                self._close(raise_on_error=False)
+                raise
+
+        self.close()
+        raise StopIteration
+
+    def close(self):
+        self._close(raise_on_error=True)
+
+    def _close(self, raise_on_error):
+        error = None
+        for reader in self._readers:
+            try:
+                reader.close()
+            except BaseException as exception:
+                if error is None:
+                    error = exception
+        self._index = len(self._readers)
+        self._closed = True
+        if raise_on_error and error is not None:
+            raise error
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self.close()
+
+    def __del__(self):
+        self._close(raise_on_error=False)
 
 
 def keys_to_flush(lengths, fraction=0.1, maxcount=100000):

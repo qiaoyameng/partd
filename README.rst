@@ -38,6 +38,12 @@ Example
         >>> p.get(['y', 'x'])  # List of keys
         [b'123456', b'Hello world!']
 
+    Stream bytes in bounded chunks without reading an entire value into
+    memory::
+
+        >>> for chunk in p.iter_chunks('x', chunksize=1024 * 1024):
+        ...     pass
+
 4.  Destroy partd dataset::
 
         >>> p.drop()

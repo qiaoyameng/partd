@@ -1,5 +1,6 @@
 from partd.file import File
 
+import pytest
 import shutil
 import os
 
@@ -78,3 +79,61 @@ def test_del():
 def test_specify_dirname():
     with File(dir=os.getcwd()) as f:
         assert os.getcwd() in f.path
+
+
+def test_iter_chunks():
+    with File() as p:
+        p.append({'x': b'abcde'})
+        iterator = p.iter_chunks('x', chunksize=2)
+        assert next(iterator) == b'ab'
+
+        p.append({'x': b'fgh'})
+
+        assert list(iterator) == [b'cd', b'e']
+        assert b''.join(p.iter_chunks('x', chunksize=2)) == b'abcdefgh'
+        assert list(p.iter_chunks('missing', chunksize=2)) == []
+
+
+def test_iter_chunks_invalid_chunksize():
+    with File() as p:
+        for chunksize in (0, -1):
+            with pytest.raises(ValueError):
+                p.iter_chunks('x', chunksize=chunksize)
+        with pytest.raises(TypeError):
+            p.iter_chunks('x', chunksize=1.5)
+
+
+def test_iter_chunks_closes_after_error():
+    class FailingFile(File):
+        def _open(self, filename):
+            return FailingHandle()
+
+    class FailingHandle:
+        closed = False
+
+        def read(self, size=-1):
+            raise OSError
+
+        def close(self):
+            self.closed = True
+
+    with FailingFile() as p:
+        p.append({'x': b'abcde'})
+        iterator = p.iter_chunks('x', chunksize=2)
+        handle = iterator._file
+
+        with pytest.raises(OSError):
+            next(iterator)
+
+        assert handle.closed
+
+
+def test_iter_chunks_concurrent_delete_finishes():
+    with File() as p:
+        p.append({'x': b'abcdef'})
+        iterator = p.iter_chunks('x', chunksize=2)
+
+        assert next(iterator) == b'ab'
+        p.delete('x')
+
+        assert list(iterator) == [b'cd', b'ef']
