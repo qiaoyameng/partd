@@ -1,4 +1,4 @@
-from .core import Interface
+from .core import Interface, DEFAULT_CHUNK_SIZE
 from threading import Lock
 from toolz import merge_with, topk, accumulate, pluck
 from operator import add
@@ -55,6 +55,29 @@ class Buffer(Interface):
         finally:
             if lock: self.lock.release()
         return result
+
+    def iter_chunks(self, key, chunk_size=DEFAULT_CHUNK_SIZE, lock=True):
+        """ Iterate over the bytes of ``key`` in chunks
+
+        Yields successive chunks of at most ``chunk_size`` bytes, drawn
+        from the fast layer first and then from the slow layer,
+        matching the concatenation order of ``get``.
+
+        Both layers' content boundaries are established when the
+        iterator is created; bytes appended afterwards are not part of
+        this iteration.  Exhausting the iterator, or calling
+        ``close()`` on it, releases any resources (e.g. file handles)
+        held in either layer.
+        """
+        if lock: self.lock.acquire()
+        try:
+            iterators = [self.fast.iter_chunks(key, chunk_size=chunk_size,
+                                               lock=False),
+                         self.slow.iter_chunks(key, chunk_size=chunk_size,
+                                               lock=False)]
+        finally:
+            if lock: self.lock.release()
+        return _chain_chunks(iterators)
 
     def _iset(self, key, value, lock=True):
         """ Idempotent set """
@@ -122,3 +145,14 @@ def keys_to_flush(lengths, fraction=0.1, maxcount=100000):
     result = [k for k, v in top[:cutoff]]
     assert result
     return result
+
+
+def _chain_chunks(iterators):
+    try:
+        for iterator in iterators:
+            yield from iterator
+    finally:
+        for iterator in iterators:
+            close = getattr(iterator, 'close', None)
+            if close is not None:
+                close()

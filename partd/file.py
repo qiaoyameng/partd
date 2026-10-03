@@ -5,7 +5,7 @@ import shutil
 import string
 import tempfile
 
-from .core import Interface
+from .core import Interface, DEFAULT_CHUNK_SIZE
 import locket
 
 
@@ -61,6 +61,39 @@ class File(Interface):
             if lock:
                 self.lock.release()
         return result
+
+    def iter_chunks(self, key, chunk_size=DEFAULT_CHUNK_SIZE, lock=True):
+        """ Iterate over the bytes of ``key`` in chunks
+
+        Streams the partition from disk in reads of at most
+        ``chunk_size`` bytes instead of materializing it in memory all
+        at once like ``get`` does.
+
+        The readable boundary is fixed when the iterator is created;
+        bytes appended afterwards are not part of this iteration.  The
+        lock is only held while this boundary is established.  A
+        missing key yields nothing.  If the key is deleted after the
+        iterator is created, iteration continues on the already-open
+        file handle up to the established boundary.
+
+        The file handle is released when the iterator is exhausted or
+        when ``close()`` is called on it, whichever comes first.
+        """
+        if chunk_size <= 0:
+            raise ValueError("chunk_size must be positive")
+        fn = self.filename(key)
+        if lock:
+            self.lock.acquire()
+        try:
+            try:
+                size = os.path.getsize(fn)
+                fileobj = open(fn, 'rb')
+            except OSError:
+                size, fileobj = 0, None
+        finally:
+            if lock:
+                self.lock.release()
+        return ChunkReader(fileobj, size, chunk_size)
 
     def _iset(self, key, value, lock=True):
         """ Idempotent set """
@@ -149,3 +182,45 @@ def cleanup():
     for fn in cleanup_files:
         if os.path.exists(fn):
             shutil.rmtree(fn)
+
+
+class ChunkReader:
+    """ Iterator over a file's bytes in bounded-size chunks
+
+    Reads at most ``size`` bytes from ``fileobj``, in chunks of at most
+    ``chunk_size`` bytes.  A read failure ends the iteration early.
+    ``close()`` releases the file handle and ends the iteration; it is
+    idempotent and safe to call at any time.  A ``None`` ``fileobj``
+    yields nothing.
+    """
+
+    def __init__(self, fileobj, size, chunk_size):
+        self._file = fileobj
+        self._remaining = size
+        self._chunk_size = chunk_size
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        if self._file is None or self._remaining <= 0:
+            self.close()
+            raise StopIteration
+        try:
+            chunk = self._file.read(min(self._chunk_size, self._remaining))
+        except OSError:
+            self.close()
+            raise StopIteration
+        if not chunk:
+            self.close()
+            raise StopIteration
+        self._remaining -= len(chunk)
+        return chunk
+
+    def close(self):
+        fileobj, self._file = self._file, None
+        if fileobj is not None:
+            fileobj.close()
+
+    def __del__(self):
+        self.close()

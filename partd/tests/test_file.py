@@ -1,5 +1,6 @@
 from partd.file import File
 
+import pytest
 import shutil
 import os
 
@@ -78,3 +79,102 @@ def test_del():
 def test_specify_dirname():
     with File(dir=os.getcwd()) as f:
         assert os.getcwd() in f.path
+
+
+class BoundedReadFile:
+    """ File double that refuses unbounded reads and tracks its usage """
+    def __init__(self, data):
+        self.data = data
+        self.pos = 0
+        self.closed = False
+        self.read_sizes = []
+
+    def read(self, n=-1):
+        if n is None or n < 0:
+            raise AssertionError("unbounded read")
+        self.read_sizes.append(n)
+        chunk = self.data[self.pos:self.pos + n]
+        self.pos += len(chunk)
+        return chunk
+
+    def close(self):
+        self.closed = True
+
+
+def test_iter_chunks():
+    with File() as p:
+        p.append({'x': b'Hello', 'y': b'abc'})
+        p.append({'x': b'World!', 'y': b'def'})
+
+        assert b''.join(p.iter_chunks('x', chunk_size=3)) == b'HelloWorld!'
+        assert b''.join(p.iter_chunks('y')) == p.get('y')
+        assert list(p.iter_chunks('z')) == []
+
+
+def test_iter_chunks_bounded_reads_and_early_close(monkeypatch):
+    with File() as p:
+        p.append({'x': b'abcdefghij'})
+        with open(p.filename('x'), 'rb') as f:
+            content = f.read()
+        handle = BoundedReadFile(content)
+        monkeypatch.setattr('partd.file.open',
+                            lambda path, mode: handle, raising=False)
+
+        it = p.iter_chunks('x', chunk_size=4)
+        assert next(it) == b'abcd'
+        assert next(it) == b'efgh'
+        it.close()
+
+        assert handle.read_sizes == [4, 4]
+        assert handle.pos == 8
+        assert handle.closed
+
+
+def test_iter_chunks_snapshot_boundary():
+    with File() as p:
+        p.append({'x': b'abcdef'})
+        it = p.iter_chunks('x', chunk_size=2)
+        p.append({'x': b'ghij'})  # not part of the ongoing iteration
+        assert b''.join(it) == b'abcdef'
+        assert p.get('x') == b'abcdefghij'
+
+
+def test_iter_chunks_survives_concurrent_delete():
+    with File() as p:
+        p.append({'x': b'abcdef'})
+        it = p.iter_chunks('x', chunk_size=2)
+        p.delete('x')
+        assert b''.join(it) == b'abcdef'
+        assert p.get('x') == b''
+
+
+def test_iter_chunks_read_error_ends_iteration(monkeypatch):
+    with File() as p:
+        p.append({'x': b'abcdef'})
+
+        class FailingFile:
+            def __init__(self):
+                self.closed = False
+                self.reads = 0
+
+            def read(self, n=-1):
+                self.reads += 1
+                if self.reads == 1:
+                    return b'ab'
+                raise OSError('boom')
+
+            def close(self):
+                self.closed = True
+
+        handle = FailingFile()
+        monkeypatch.setattr('partd.file.open',
+                            lambda path, mode: handle, raising=False)
+        it = p.iter_chunks('x', chunk_size=2)
+        assert list(it) == [b'ab']
+        assert handle.closed
+
+
+def test_iter_chunks_invalid_chunk_size():
+    with File() as p:
+        with pytest.raises(ValueError):
+            p.iter_chunks('x', chunk_size=0)

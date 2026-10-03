@@ -42,6 +42,9 @@ def token(key):
         return str(key)
 
 
+DEFAULT_CHUNK_SIZE = 2 ** 20  # 1 MiB
+
+
 class Interface:
     def __init__(self):
         self._iset_seen = set()
@@ -76,6 +79,24 @@ class Interface:
         else:
             return self._get(keys, **kwargs)
 
+    def iter_chunks(self, key, chunk_size=DEFAULT_CHUNK_SIZE, **kwargs):
+        """ Iterate over the bytes of ``key`` in chunks
+
+        Yields successive chunks of at most ``chunk_size`` bytes.  The
+        content boundary is determined when the iterator is created;
+        bytes appended afterwards are not part of this iteration.
+
+        This default implementation materializes the value with ``get``
+        and slices it.  Backends holding external resources (e.g.
+        ``File``) override this to stream the data in bounded-size
+        reads instead.
+        """
+        if chunk_size <= 0:
+            raise ValueError("chunk_size must be positive")
+        data = self.get(key, **kwargs)
+        return iter([data[start:start + chunk_size]
+                     for start in range(0, len(data), chunk_size)])
+
     def delete(self, keys, **kwargs):
         if not isinstance(keys, list):
             return self._delete([keys], **kwargs)
@@ -87,4 +108,3 @@ class Interface:
             result = self.partd.get(keys, lock=False)
             self.partd.delete(keys, lock=False)
         return result
-
