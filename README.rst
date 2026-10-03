@@ -61,6 +61,13 @@ However this can fail for many small writes.  In these cases you may wish to buf
 
     >>> p = Buffer(Dict(), File(), available_memory=2e9)  # 2GB memory buffer
 
+To keep a single misbehaving task from filling the disk we can wrap any partd
+with byte quotas, limiting both each partition and the whole store.  Batches
+are checked in full before anything is written; oversized batches raise
+``QuotaExceeded`` and write nothing::
+
+    >>> p = Quota(File('/path/to/dataset/'), partition_quota=1e6, total_quota=1e9)
+
 You might also want to have many distributed process write to a single partd
 consistently.  This can be done with a server
 
