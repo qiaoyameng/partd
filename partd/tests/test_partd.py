@@ -29,7 +29,10 @@ def test_partd():
 def test_key_tuple():
     with File('foo') as p:
         p.append({('a', 'b'): b'123'})
-        assert os.path.exists(os.path.join(p.path, 'a', 'b'))
+        # v2 layout: tuples are a single typed file name, not directories
+        assert os.path.exists(p.filename(('a', 'b')))
+        assert p.get(('a', 'b')) == b'123'
+        assert p.get(('a', 'b')) != p.get('a')
 
 
 def test_ensure():
