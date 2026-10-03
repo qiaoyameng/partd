@@ -4,6 +4,7 @@ from .file import File
 from .dict import Dict
 from .buffer import Buffer
 from .encode import Encode
+from .checksum import Checksum
 from .pickle import Pickle
 from .python import Python
 from .compressed import *

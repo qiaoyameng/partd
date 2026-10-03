@@ -92,6 +92,17 @@ another partd as an argument.::
 
 These work exactly as before, the (de)compression happens automatically.
 
+Append-only files can also be protected with the composable ``Checksum``
+layer.  It writes an explicit format marker, format version, payload length,
+and CRC for every appended payload.  Corruption and truncation raise an error
+by default; ``recover=True`` only ignores an unfinished final frame.::
+
+    >>> p = Checksum(ZLib(File('foo')))
+    >>> p.get('x', recover=True)
+
+Declared payload lengths are bounded by ``max_payload_size`` so a corrupt
+header cannot cause a very large allocation.
+
 Common data formats like Python lists, numpy arrays, and pandas
 dataframes are also supported out of the box.::
 
