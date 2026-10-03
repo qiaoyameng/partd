@@ -7,6 +7,7 @@ from .encode import Encode
 from .pickle import Pickle
 from .python import Python
 from .compressed import *
+from .quota import Quota, QuotaExceeded
 with suppress(ImportError):
     from .numpy import Numpy
 with suppress(ImportError):
