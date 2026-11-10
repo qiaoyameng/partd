@@ -1,0 +1,27 @@
+
+=== fast.append fails outright: no phantom state, retries blocked ===
+  append raised: injected fast.append failure
+  state after failure: lengths={} mem=0 fast={} slow={}
+  [retry append] blocked retry with BufferErrorState: Buffer is in an error state after fast.append; refusing to retry because part of the data may already have been written. Inspect the backing stores and rebuild the Buffer.
+  [retry flush] blocked retry with BufferErrorState: Buffer is in an error state after fast.append; refusing to retry because part of the data may already have been written. Inspect the backing stores and rebuild the Buffer.
+  get after poisoning: ['', ''] consistent with empty stores
+
+=== slow.append partially writes then fails: no rollback, no blind retry ===
+  flush raised: injected slow.append partial-write failure
+  fast intact=[b'11', b'22', b'33'] lengths={'a': 2, 'b': 2, 'c': 2} mem=6
+  slow on disk (partial write, NOT rolled back)=[b'11', b'', b'']
+  [retry flush] blocked retry with BufferErrorState: Buffer is in an error state after slow.append during flush; refusing to retry because part of the data may already have been written. Inspect the backing stores and rebuild the Buffer.
+  [more appends] blocked retry with BufferErrorState: Buffer is in an error state after slow.append during flush; refusing to retry because part of the data may already have been written. Inspect the backing stores and rebuild the Buffer.
+  get after poisoning: [b'1111', b'22', b'33']
+
+=== slow.append ok but fast.delete fails: data safe on slow, error marked ===
+  flush raised: injected fast.delete failure
+  slow holds the data: [b'AA']; error=fast.delete during flush
+  [retry append] blocked retry with BufferErrorState: Buffer is in an error state after fast.delete during flush; refusing to retry because part of the data may already have been written. Inspect the backing stores and rebuild the Buffer.
+
+=== auto flush inside append hits partial slow failure ===
+  append(auto-flush) raised: injected slow.append partial-write failure
+  poisoned=slow.append during flush lengths={'a': 2, 'b': 2, 'c': 2} mem=6
+  [retry] blocked retry with BufferErrorState: Buffer is in an error state after slow.append during flush; refusing to retry because part of the data may already have been written. Inspect the backing stores and rebuild the Buffer.
+
+ALL FAILURE SCENARIOS BEHAVE AS DESIGNED
