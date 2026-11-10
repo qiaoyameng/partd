@@ -6,6 +6,7 @@ from .buffer import Buffer
 from .encode import Encode
 from .pickle import Pickle
 from .python import Python
+from .repartition import RepartitionError, repartition
 from .compressed import *
 with suppress(ImportError):
     from .numpy import Numpy
